@@ -79,7 +79,7 @@ function latestNews($latest){
 		}while($active && $status == CURLM_OK);
 
 		foreach($handles as $key => $handle){
-			$news = ['id' => newsID($key), 'url' => '$key'];
+			$news = ['id' => newsID($key), 'url' => $key];
 			$content = curl_multi_getcontent($handle);
 			if(!empty($content)){
 				$html = str_get_html($content);
