@@ -68,7 +68,7 @@ function latestNews($latest){
 			]);
 
 			curl_multi_add_handle($multiHandle, $handle);
-			$handles[newsID($latest[$index])] = $handle;
+			$handles[$latest[$index]] = $handle;
 		}
 
 		do{
@@ -79,7 +79,7 @@ function latestNews($latest){
 		}while($active && $status == CURLM_OK);
 
 		foreach($handles as $key => $handle){
-			$news = ['id' => $key];
+			$news = ['id' => newsID($key), 'url' => '$key'];
 			$content = curl_multi_getcontent($handle);
 			if(!empty($content)){
 				$html = str_get_html($content);
