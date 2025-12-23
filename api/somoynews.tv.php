@@ -11,8 +11,12 @@ function plainBody($news){
 			$p->remove();
 		}
 	}
+	
+	$text = html_entity_decode(trim($html->plaintext));
+	$html->clear();
+	unset($html);
 
-	return str_replace("\r\n", "", html_entity_decode(trim($html->plaintext)));
+	return str_replace("\r\n", "", $text);
 }
 
 function plainTags($tags){
@@ -84,6 +88,6 @@ function recentNews($i = 0){
 	return ['success' => true, 'messsage' => 'Latest news successfully fetched.', 'news' => array_reverse($latest)];
 }
 
-header("Content-Type: application/json; charset=utf-8");
 $update = $_GET['update'] ?? $_POST['update'] ?? 0;
-echo json_encode(recentNews(intval($update)));
+header("Content-Type: application/json; charset=utf-8");
+echo json_encode(recentNews(intval($update)), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);

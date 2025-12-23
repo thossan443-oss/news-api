@@ -1,14 +1,15 @@
 <?php
 include 'helper.php';
+date_default_timezone_set('Asia/Dhaka');
 
 function newsID($link){
 	$parts = explode('/', $link);
-	return intval(end($parts));
+	return intval($parts[count($parts) - 2]);
 }
 
 function recentNewsLinks(){
 	$ch = curl_init();
-	curl_setopt($ch, CURLOPT_URL, 'https://jamuna.tv/archive');
+	curl_setopt($ch, CURLOPT_URL, 'https://www.itvbd.com/api/theme_engine/get_ajax_contents?widget=725&start=0&count=50&page_id=0&subpage_id=0&author=0&tags=&archive_time='.date('Y-m-d').'&filter=');
 	curl_setopt($ch, CURLOPT_TIMEOUT, 15);
 	curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
 	curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
@@ -25,8 +26,13 @@ function recentNewsLinks(){
 		return false;
 	}
 	
-	$html = str_get_html($content);
-	$linkOverlay = $html->find('a.linkOverlay');
+	$json = json_decode($content, true);
+	if($json === null || !isset($json['total'], $json['html']) || $json['total'] === 0){
+		return false;
+	}
+	
+	$html = str_get_html($json['html']);
+	$linkOverlay = $html->find('a.link_overlay');
 	if(!$linkOverlay){
 		return false;
 	}
@@ -35,12 +41,9 @@ function recentNewsLinks(){
 	foreach($linkOverlay as $link){
 		$href = $link->getAttribute('href') ?? null;
 		if($href){
-			$links[] = $href;
+			$links[] = 'https:'.$href;
 		}
 	}
-	
-	$html->clear();
-	unset($html);
 	
 	if(empty($links)){
 		return false;
@@ -85,57 +88,42 @@ function latestNews($latest){
 			$news = ['id' => newsID($key), 'url' => $key];
 			$content = curl_multi_getcontent($handle);
 			if(!empty($content)){
+				$newsData = [];
 				$html = str_get_html($content);
-				$desktopDetailHeadline = $html->find('.desktopDetailHeadline', 0);
-				$desktopDetailPhoto = $html->find('.desktopDetailPhoto', 0);
-				$desktopDetailBody = $html->find('.desktopDetailBody', 0);
-				$desktopDetailReporter = $html->find('.desktopDetailReporter', 0);
-				$desktopDetailPTime = $html->find('.desktopDetailPTime', 0);
+				$img = $html->find('#adf-overlay', 0);
+				$time = $html->find('.published_time', 0);
+				$subtitle = $html->find('.content_highlights', 0);
+				$author = $html->find('div[itemprop="author"]', 0);
+				$headline = $html->find('h1[itemprop="headline"]', 0);
+				$body = $html->find('div[itemprop="articleBody"]', 0);
 				
-				if(!$desktopDetailHeadline){
-					$desktopDetailHeadline = $html->find('title', 0);
+				foreach($html->find('script[type="application/ld+json"]') as $script){
+					$json = trim($script->innertext);
+					if ($json === '') continue;
+
+					$data = json_decode($json, true);
+					if (!is_array($data)) continue;
+
+					if(isset($data['headline'], $data['description'], $data['datePublished'])){
+						$newsData = $data;
+						break;
+					}
 				}
 				
-				if($desktopDetailHeadline && $desktopDetailBody){
-					$imageFound = false;
-					$news['image'] = $news['time'] = $news['reporter'] = null;
-					$news['title'] = html_entity_decode(trim($desktopDetailHeadline->plaintext));
-					$news['body'] = html_entity_decode(trim($desktopDetailBody->plaintext));
-					
-					if($desktopDetailPhoto){
-						$desktopDetailImg = $desktopDetailPhoto->find('img', 0);
-						if($desktopDetailImg){
-							$src = $desktopDetailImg->getAttribute('src') ?? false;
-							if($src){
-								$imageFound = true;
-								$news['image'] = $src;
-							}
-						}
+				if(($headline || isset($newsData['headline'])) && $body){
+					$news['reporter'] = $newsData['author']['name'] ?? ($author ? html_entity_decode(trim($author->plaintext)) : '');
+					$news['time'] = isset($newsData['datePublished']) ? date("l, F j, Y, h:i:s A", strtotime($newsData['datePublished'])) : ($time ? html_entity_decode(trim($time->plaintext)) : '');
+					$news['image'] = $newsData['image']['url'] ?? ($img ? 'https:'.trim($img->getAttribute('src')) : '');
+					$news['title'] = $newsData['headline'] ?? html_entity_decode(trim($headline->plaintext));
+					$news['subtitle'] = $newsData['description'] ?? ($subtitle ? html_entity_decode(trim($subtitle->plaintext)) : '');
+					$news['body'] = html_entity_decode(trim($body->plaintext));
+					if(mb_strpos($news['body'], 'আরও ভিডিও দেখতে ইনডিপেনডেন্ট টেলিভিশনের ইউটিউব চ্যানেলের লিংকটি ক্লিক করুন') === false){
+						$output[] = $news;
 					}
-					
-					if($imageFound === false){
-						$desktopDetailImg = $html->find('[property="og:image"]', 0);
-						if($desktopDetailImg){
-							$src = $desktopDetailImg->getAttribute('content') ?? false;
-							if($src){
-								$news['image'] = $src;
-							}
-						}
-					}
-					
-					if($desktopDetailReporter){
-						$news['reporter'] = html_entity_decode(trim($desktopDetailReporter->plaintext));
-					}
-					
-					if($desktopDetailPTime){
-						$news['time'] = html_entity_decode(trim($desktopDetailPTime->plaintext));
-					}
-					
-					$html->clear();
-					unset($html);
-					
-					$output[] = $news;
 				}
+				
+				$html->clear();
+				unset($html);
 			}
 			curl_multi_remove_handle($multiHandle, $handle);
 			curl_close($handle);
@@ -157,11 +145,12 @@ function latestNews($latest){
 function recentNews($i = 0){
 	$res = ['success' => false];
 	$links = recentNewsLinks();
+	
 	if($links === false){
 		$res['messsage'] = 'Failed to fetch recent news links.';
 		return $res;
 	}
-	
+
 	$latest = []; 
 	foreach($links as $link){
 		$no = newsID($link);
