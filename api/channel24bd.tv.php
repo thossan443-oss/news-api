@@ -2,20 +2,45 @@
 include 'helper.php';
 date_default_timezone_set('Asia/Dhaka');
 
+function plainBody($news){
+	$html = str_get_html($news);
+
+	foreach($html->find('p, ul') as $el){
+		$text = trim($el->innertext);
+		if(mb_strpos($text, '/article/') !== false || mb_strpos($text, 'আরও পড়ুন') !== false || mb_strpos($text, 'সর্বশেষ খবর পেতে গুগল প্লে স্টোর এবং অ্যাপল অ্যাপ স্টোর') !== false){
+			$el->remove();
+		}
+	}
+	
+	$text = html_entity_decode(trim($html->plaintext));
+	$html->clear();
+	unset($html);
+
+	return str_replace("\r\n", "", $text);
+}
+
 function newsID($link){
 	$parts = explode('/', $link);
-	return intval($parts[count($parts) - 2]);
+	return intval(end($parts));
+}
+
+function newsCategory($link){
+	$parts = explode('/', $link);
+	return $parts[count($parts) - 2];
 }
 
 function recentNewsLinks(){
 	$ch = curl_init();
-	curl_setopt($ch, CURLOPT_URL, 'https://www.itvbd.com/api/theme_engine/get_ajax_contents?widget=725&start=0&count=50&page_id=0&subpage_id=0&author=0&tags=&archive_time='.date('Y-m-d').'&filter=');
+	curl_setopt($ch, CURLOPT_URL, 'https://backoffice.channel24bd.tv/api/v2/archive');
+	curl_setopt($ch, CURLOPT_POST, true);
 	curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+	curl_setopt($ch, CURLOPT_POSTFIELDS, '{"start_date":"","end_date":"","category_name":0,"limit":50}');
 	curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
 	curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
 	curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
 	curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 0);
 	curl_setopt($ch, CURLOPT_HTTPHEADER, [
+		'content-type: application/json',
 		'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36'
 	]);
 	$content = curl_exec($ch);
@@ -27,21 +52,21 @@ function recentNewsLinks(){
 	}
 	
 	$json = json_decode($content, true);
-	if($json === null || !isset($json['total'], $json['html']) || $json['total'] === 0){
-		return false;
-	}
-	
-	$html = str_get_html($json['html']);
-	$linkOverlay = $html->find('a.link_overlay');
-	if(!$linkOverlay){
+	if($json === null || !isset($json['archive_data'])){
 		return false;
 	}
 	
 	$links = [];
-	foreach($linkOverlay as $link){
-		$href = $link->getAttribute('href') ?? null;
-		if($href){
-			$links[] = 'https:'.$href;
+	foreach($json['archive_data'] as $data){
+		$Slug = $data['Slug'] ?? null;
+		$VideoID = $data['VideoID'] ?? null;
+		$URLAlies = $data['URLAlies'] ?? null;
+		$ContentID = $data['ContentID'] ?? null;
+		$VideoPath = $data['VideoPath'] ?? null;
+		$VideoType = $data['VideoType'] ?? null;
+		
+		if($Slug && $URLAlies && $ContentID && $VideoID === null && $VideoPath === null && $VideoType === null){
+			$links[] = 'https://backoffice.channel24bd.tv/api/v2/content-details/'.$Slug.'/'.$ContentID;
 		}
 	}
 	
@@ -52,7 +77,7 @@ function recentNewsLinks(){
 	return array_reverse($links);
 }
 
-function latestNews($latest){
+function latestNews($latest){ 
 	$output = [];
 	$handles = [];
 	$completed = 0;
@@ -85,45 +110,37 @@ function latestNews($latest){
 		}while($active && $status == CURLM_OK);
 
 		foreach($handles as $key => $handle){
-			$news = ['id' => newsID($key), 'url' => $key];
+			
 			$content = curl_multi_getcontent($handle);
 			if(!empty($content)){
-				$newsData = [];
-				$html = str_get_html($content);
-				$img = $html->find('#adf-overlay', 0);
-				$time = $html->find('.published_time', 0);
-				$subtitle = $html->find('.content_highlights', 0);
-				$author = $html->find('div[itemprop="author"]', 0);
-				$headline = $html->find('h1[itemprop="headline"]', 0);
-				$body = $html->find('div[itemprop="articleBody"]', 0);
-				
-				foreach($html->find('script[type="application/ld+json"]') as $script){
-					$json = trim($script->innertext);
-					if ($json === '') continue;
-
-					$data = json_decode($json, true);
-					if (!is_array($data)) continue;
-
-					if(isset($data['headline'], $data['description'], $data['datePublished'])){
-						$newsData = $data;
-						break;
+				$news = json_decode(str_replace(['\u00a0', '&nbsp;'], '', $content), true);
+				if($news !== null && isset($news['contentDetails'][0])){
+					$category = newsCategory($key);
+					$id = $news['contentDetails'][0]['ContentID'] ?? newsID($key); 
+					$uri = $news['contentDetails'][0]['URLAlies'] ?? ''; 
+					$time = $news['contentDetails'][0]['create_date'] ?? ''; 
+					$title = $news['contentDetails'][0]['ContentHeading'] ?? ''; 
+					$subtitle = $news['contentDetails'][0]['ContentBrief'] ?? ''; 
+					$body = $news['contentDetails'][0]['ContentDetails'] ?? ''; 
+					$tags = $news['contentDetails'][0]['Keywords'] ?? ''; 
+					$img = isset($news['contentDetails'][0]['ImageBgPath']) ? 'https://backoffice.channel24bd.tv/media/imgAll/'.$news['contentDetails'][0]['ImageBgPath'] : ''; 
+					$reporter = $news['writerInfo']['WriterName'] ?? $news['contentDetails'][0]['WriterName'] ?? ''; 
+					
+					if($uri && $time && $title && $body){
+						$output[] = [
+							'id' => intval($id),
+							'category' => $category,
+							'reporter' => trim($reporter),
+							'time' => date("l, j F Y, h:i:s A", strtotime($time)),
+							'url' => 'https://www.channel24bd.tv/'.$category.'/article/'.$id.'/'.urlencode($uri),
+							'image' => $img,
+							'title' => trim($title),
+							'subtitle' => trim($subtitle),
+							'body' => plainBody($body),
+							'tags' => trim($tags)
+						];	
 					}
 				}
-				
-				if(($headline || isset($newsData['headline'])) && $body){
-					$news['reporter'] = $newsData['author']['name'] ?? ($author ? html_entity_decode(trim($author->plaintext)) : '');
-					$news['time'] = isset($newsData['datePublished']) ? date("l, j F Y, h:i:s A", strtotime($newsData['datePublished'])) : ($time ? html_entity_decode(trim($time->plaintext)) : '');
-					$news['image'] = $newsData['image']['url'] ?? ($img ? 'https:'.trim($img->getAttribute('src')) : '');
-					$news['title'] = $newsData['headline'] ?? html_entity_decode(trim($headline->plaintext));
-					$news['subtitle'] = $newsData['description'] ?? ($subtitle ? html_entity_decode(trim($subtitle->plaintext)) : '');
-					$news['body'] = html_entity_decode(trim($body->plaintext));
-					if(mb_strpos($news['body'], 'আরও ভিডিও দেখতে ইনডিপেনডেন্ট টেলিভিশনের ইউটিউব চ্যানেলের লিংকটি ক্লিক করুন') === false){
-						$output[] = $news;
-					}
-				}
-				
-				$html->clear();
-				unset($html);
 			}
 			curl_multi_remove_handle($multiHandle, $handle);
 			curl_close($handle);
@@ -145,12 +162,11 @@ function latestNews($latest){
 function recentNews($i = 0){
 	$res = ['success' => false];
 	$links = recentNewsLinks();
-	
 	if($links === false){
 		$res['messsage'] = 'Failed to fetch recent news links.';
 		return $res;
 	}
-
+	
 	$latest = []; 
 	foreach($links as $link){
 		$no = newsID($link);
